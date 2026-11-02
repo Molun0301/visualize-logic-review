@@ -1,0 +1,13 @@
+{
+  "name": "visualize-logic-review",
+  "owner": {
+    "name": "Molun0301"
+  },
+  "plugins": [
+    {
+      "name": "visualize-logic-review",
+      "source": "./"
+    }
+  ],
+  "description": "逻辑图审查技能"
+}

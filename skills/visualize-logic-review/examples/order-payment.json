@@ -1,0 +1,143 @@
+{
+  "title": "订单支付重试方案审查",
+  "summary": "提案在支付网关超时时自动重试，但超时不代表扣款失败；需要先查询支付结果再决定是否重试，否则可能重复扣款。",
+  "language": "zh",
+  "sources": {
+    "R1": "需求文档第 3 节：支付失败最多自动重试 3 次",
+    "R2": "需求文档第 4 节：用户可在支付完成前取消订单",
+    "S1": "order/pay.py:submit_payment() 第 40–88 行（提交 a1b2c3d）",
+    "S2": "order/validate.py:check_order() 第 12–35 行，校验失败直接 return，未释放库存",
+    "D1": "支付网关文档：超时响应时扣款结果未知，需调用查询接口"
+  },
+  "diagrams": [
+    {
+      "id": "flow",
+      "kind": "flowchart",
+      "title": "提案 · 支付提交与重试",
+      "question": "支付失败或超时后，订单会走到哪里？会不会重复扣款？",
+      "basis": "R1、S1 现有代码 + 本次提案的重试逻辑；未运行",
+      "status": "proposal",
+      "nodes": [
+        {"id": "N1", "label": "用户提交订单", "shape": "start", "status": "fact", "refs": ["S1"]},
+        {"id": "N2", "label": "参数与库存校验通过？", "shape": "decision", "status": "fact", "refs": ["S2"]},
+        {"id": "N3", "label": "返回 400", "detail": "库存未释放", "shape": "end", "tone": "danger", "status": "fact", "refs": ["S2"]},
+        {"id": "N4", "label": "生成幂等键", "detail": "order_id + attempt"},
+        {"id": "N5", "label": "调用支付网关", "refs": ["S1"]},
+        {"id": "N6", "label": "网关返回结果？", "shape": "decision"},
+        {"id": "N7", "label": "订单标记为已支付", "shape": "end", "tone": "success"},
+        {"id": "N8", "label": "已重试次数 < 3？", "shape": "decision", "refs": ["R1"]},
+        {"id": "N9", "label": "退避等待", "detail": "1s → 2s → 4s"},
+        {"id": "N10", "label": "订单标记为支付失败", "shape": "end", "tone": "danger"},
+        {"id": "N11", "label": "查询支付结果", "status": "assumption", "refs": ["D1"]}
+      ],
+      "edges": [
+        {"from": "N1", "to": "N2", "type": "main"},
+        {"from": "N2", "to": "N3", "label": "否", "type": "error"},
+        {"from": "N2", "to": "N4", "label": "是", "type": "main"},
+        {"from": "N4", "to": "N5", "type": "main"},
+        {"from": "N5", "to": "N6", "type": "main"},
+        {"id": "E7", "from": "N6", "to": "N7", "label": "成功", "type": "main"},
+        {"from": "N6", "to": "N8", "label": "明确失败", "type": "error"},
+        {"id": "E9", "from": "N6", "to": "N11", "label": "超时", "type": "cancel", "status": "assumption", "refs": ["D1"]},
+        {"from": "N11", "to": "N7", "label": "已扣款", "status": "assumption"},
+        {"from": "N11", "to": "N8", "label": "未扣款", "status": "assumption"},
+        {"from": "N8", "to": "N9", "label": "是"},
+        {"id": "E13", "from": "N9", "to": "N5", "label": "重试（最多 3 次）", "type": "retry", "refs": ["R1"]},
+        {"from": "N8", "to": "N10", "label": "否", "type": "error"}
+      ]
+    },
+    {
+      "id": "seq",
+      "kind": "sequence",
+      "title": "提案 · 超时后的调用顺序",
+      "question": "超时发生时，谁在等待、谁负责查询结果？",
+      "basis": "D1 网关文档 + 提案；消息顺序是设计意图，不是运行轨迹",
+      "status": "proposal",
+      "participants": [
+        {"id": "U", "label": "用户", "shape": "actor"},
+        {"id": "API", "label": "订单服务", "detail": "order/pay.py", "status": "fact", "refs": ["S1"]},
+        {"id": "PG", "label": "支付网关", "shape": "external", "status": "fact", "refs": ["D1"]},
+        {"id": "DB", "label": "订单库", "shape": "store", "status": "fact", "refs": ["S1"]}
+      ],
+      "messages": [
+        {"id": "M1", "from": "U", "to": "API", "label": "提交支付"},
+        {"id": "M2", "from": "API", "to": "DB", "label": "写入 支付中"},
+        {"id": "M3", "from": "API", "to": "PG", "label": "扣款请求（携带幂等键）", "tone": "main"},
+        {"id": "M4", "from": "PG", "to": "API", "label": "扣款成功", "type": "return"},
+        {"id": "M5", "from": "API", "to": "DB", "label": "写入 已支付", "tone": "main"},
+        {"id": "M6", "note": "等待最多 5 秒", "over": ["API", "PG"]},
+        {"id": "M7", "from": "API", "to": "PG", "label": "查询支付结果", "status": "assumption", "refs": ["D1"]},
+        {"id": "M8", "from": "PG", "to": "API", "label": "未扣款", "type": "return", "tone": "error"},
+        {"id": "M9", "from": "API", "to": "API", "label": "退避后重新扣款", "tone": "retry"},
+        {"id": "M10", "from": "API", "to": "U", "label": "返回处理中", "type": "async"}
+      ],
+      "frames": [
+        {"type": "alt", "label": "网关按时返回", "start": "M4", "end": "M9", "branches": [{"before": "M6", "label": "超时"}]},
+        {"type": "loop", "label": "最多 3 次", "start": "M7", "end": "M9"}
+      ]
+    },
+    {
+      "id": "state",
+      "kind": "state",
+      "title": "现状 + 提案 · 订单状态",
+      "question": "取消和支付成功同时发生时，订单最终是什么状态？",
+      "basis": "R2 + S1；“取消中”为提案新增状态",
+      "status": "fact",
+      "direction": "LR",
+      "nodes": [
+        {"id": "I", "shape": "initial"},
+        {"id": "P", "label": "待支付", "refs": ["S1"]},
+        {"id": "PAYING", "label": "支付中", "refs": ["S1"]},
+        {"id": "PAID", "label": "已支付", "refs": ["S1"]},
+        {"id": "FAILED", "label": "支付失败", "tone": "danger", "refs": ["S1"]},
+        {"id": "CANCEL", "label": "已取消", "tone": "neutral", "refs": ["R2"]},
+        {"id": "F", "shape": "final"}
+      ],
+      "edges": [
+        {"from": "I", "to": "P"},
+        {"from": "P", "to": "PAYING", "label": "提交支付", "refs": ["S1"]},
+        {"from": "PAYING", "to": "PAID", "label": "扣款成功", "type": "main", "refs": ["S1"]},
+        {"from": "PAYING", "to": "FAILED", "label": "重试耗尽", "type": "error", "status": "proposal", "refs": ["R1"]},
+        {"from": "P", "to": "CANCEL", "label": "用户取消", "type": "cancel", "refs": ["R2"]},
+        {"id": "T6", "from": "PAYING", "to": "CANCEL", "label": "用户取消 [网关未响应]", "type": "cancel", "status": "unknown", "refs": ["R2"]},
+        {"from": "PAID", "to": "F"},
+        {"from": "FAILED", "to": "F"},
+        {"from": "CANCEL", "to": "F"}
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "id": "F1", "level": "risk", "title": "超时后直接重试可能重复扣款",
+      "anchors": ["flow:E9", "flow:E13", "seq:M9"],
+      "trigger": "网关在 5 秒内未响应，但实际已扣款",
+      "impact": "同一订单被扣款两次，需要人工退款",
+      "suggestion": "超时先查询支付结果；只有确认未扣款才重试，并沿用同一幂等键",
+      "tradeoff": "多一次查询调用，超时路径延迟增加约 1 秒",
+      "refs": ["D1"]
+    },
+    {
+      "id": "F2", "level": "confirmed", "title": "校验失败时库存没有释放",
+      "anchors": ["flow:N3"],
+      "trigger": "库存已预占，随后参数校验失败",
+      "impact": "库存被永久占用，直到人工清理",
+      "suggestion": "在 return 前调用 release_stock()，或把预占移到校验之后",
+      "refs": ["S2"]
+    },
+    {
+      "id": "F3", "level": "verify", "title": "支付中取消与扣款成功的竞态未定义",
+      "anchors": ["state:T6"],
+      "trigger": "用户在网关处理期间取消，随后网关返回扣款成功",
+      "impact": "订单可能显示已取消但已扣款",
+      "suggestion": "定义“取消中”状态：等待网关最终结果后再决定退款或取消",
+      "refs": ["R2"]
+    }
+  ],
+  "tests": [
+    {"id": "T1", "title": "网关超时但实际已扣款", "covers": ["flow:E9", "flow:N11"], "expect": "查询到已扣款后进入 N7，不再发起第二次扣款", "status": "todo"},
+    {"id": "T2", "title": "连续 3 次明确失败", "covers": ["flow:E13", "flow:N10"], "expect": "第 3 次失败后进入 N10，不再排队重试", "status": "todo"},
+    {"id": "T3", "title": "校验失败释放库存", "covers": ["flow:N3"], "expect": "返回 400 且库存数恢复", "status": "fail", "command": "pytest tests/test_validate.py -k release"}
+  ],
+  "decisions": ["超时后最多查询几次支付结果、总等待多久，需要产品确认"],
+  "limitations": ["未运行代码；时序图只表达设计意图", "未检查网关回调（webhook）路径"]
+}

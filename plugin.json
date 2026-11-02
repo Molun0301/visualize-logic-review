@@ -1,0 +1,12 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "visualize-logic-review",
+  "version": "1.0.0",
+  "description": "用离线逻辑图审查方案、状态、并发和数据流。",
+  "author": {
+    "name": "Molun0301"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/Molun0301/visualize-logic-review",
+  "repository": "https://github.com/Molun0301/visualize-logic-review"
+}

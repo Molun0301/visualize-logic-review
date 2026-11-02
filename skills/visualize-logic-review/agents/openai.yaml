@@ -1,0 +1,13 @@
+interface:
+  display_name: 方案逻辑可视化
+  short_description: 先把开发方案画成自动排版的审查图，标出主路径、失败分支和问题，再落实代码与测试
+  default_prompt: 使用 $visualize-logic-review，先把这个开发方案画成可审查的图，标出关键分支、失败路径和证据，再给实现与测试建议。
+  icon_small: assets/icon.svg
+  icon_large: assets/icon.svg
+policy:
+  products:
+  - chatgpt
+  - codex
+  - api
+  - atlas
+  allow_implicit_invocation: true

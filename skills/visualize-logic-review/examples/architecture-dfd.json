@@ -1,0 +1,72 @@
+{
+  "title": "附件上传服务：架构与数据流",
+  "summary": "上传文件经网关进入对象存储；病毒扫描为异步。未扫描的文件当前可以被下载，这是主要风险。",
+  "sources": {
+    "S1": "gateway/routes.yaml：/upload 与 /download 路由",
+    "S2": "upload/service.go:Save() 写入 S3 后立即返回 URL",
+    "S3": "scanner/worker.py：订阅 upload.created 事件",
+    "R1": "安全规范 4.2：未经扫描的用户文件不得对外提供"
+  },
+  "diagrams": [
+    {
+      "id": "arch",
+      "kind": "architecture",
+      "title": "现状 · 容器级架构（C4 风格概览）",
+      "basis": "S1–S3 源码阅读；未部署验证",
+      "status": "fact",
+      "groups": [
+        {"id": "G1", "label": "公司内网", "style": "trust"},
+        {"id": "G2", "label": "上传服务进程", "parent": "G1"},
+        {"id": "G3", "label": "云厂商", "style": "external"}
+      ],
+      "nodes": [
+        {"id": "U", "label": "浏览器", "shape": "external", "refs": ["S1"]},
+        {"id": "GW", "label": "API 网关", "detail": "鉴权、限流", "group": "G1", "refs": ["S1"]},
+        {"id": "UP", "label": "上传接口", "detail": "upload/service.go", "group": "G2", "refs": ["S2"]},
+        {"id": "DL", "label": "下载接口", "group": "G2", "refs": ["S1"]},
+        {"id": "MQ", "label": "消息队列", "shape": "store", "group": "G1", "refs": ["S3"]},
+        {"id": "SC", "label": "病毒扫描 worker", "group": "G1", "refs": ["S3"]},
+        {"id": "S3B", "label": "对象存储", "shape": "store", "group": "G3", "refs": ["S2"]}
+      ],
+      "edges": [
+        {"from": "U", "to": "GW", "label": "HTTPS", "refs": ["S1"]},
+        {"from": "GW", "to": "UP", "label": "POST /upload", "type": "main", "refs": ["S1"]},
+        {"from": "GW", "to": "DL", "label": "GET /download", "refs": ["S1"]},
+        {"from": "UP", "to": "S3B", "label": "PutObject", "type": "main", "refs": ["S2"]},
+        {"from": "UP", "to": "MQ", "label": "upload.created", "type": "async", "refs": ["S3"]},
+        {"from": "MQ", "to": "SC", "label": "消费", "type": "async", "refs": ["S3"]},
+        {"from": "SC", "to": "S3B", "label": "读取并打标签", "refs": ["S3"]},
+        {"id": "E8", "from": "DL", "to": "S3B", "label": "GetObject（不检查扫描标签）", "type": "error", "refs": ["S1", "R1"]}
+      ]
+    },
+    {
+      "id": "dfd",
+      "kind": "dfd",
+      "title": "现状 · 用户文件的数据流",
+      "basis": "S2、S3；保留期限未找到配置，标为未知",
+      "status": "fact",
+      "nodes": [
+        {"id": "P1", "label": "用户", "shape": "external", "refs": ["S1"]},
+        {"id": "P2", "label": "保存上传", "refs": ["S2"]},
+        {"id": "D1", "label": "对象存储 bucket", "detail": "保留期：未知", "shape": "store", "status": "unknown"},
+        {"id": "P3", "label": "扫描文件", "refs": ["S3"]},
+        {"id": "D2", "label": "扫描结果标签", "shape": "store", "refs": ["S3"]},
+        {"id": "P4", "label": "提供下载", "refs": ["S1"]}
+      ],
+      "edges": [
+        {"from": "P1", "to": "P2", "label": "文件 + 用户令牌", "refs": ["S2"]},
+        {"from": "P2", "to": "D1", "label": "原始文件", "refs": ["S2"]},
+        {"from": "D1", "to": "P3", "label": "原始文件（副本）", "refs": ["S3"]},
+        {"from": "P3", "to": "D2", "label": "clean / infected", "refs": ["S3"]},
+        {"from": "D1", "to": "P4", "label": "原始文件", "type": "error", "refs": ["S1"]},
+        {"from": "P4", "to": "P1", "label": "文件内容", "refs": ["S1"]},
+        {"from": "D2", "to": "P4", "type": "depends", "status": "proposal", "label": "扫描结果（提案：下载前检查）"}
+      ]
+    }
+  ],
+  "findings": [
+    {"id": "F1", "level": "confirmed", "title": "未扫描完成的文件可以被下载", "anchors": ["arch:E8", "dfd:P4"], "trigger": "上传后、扫描完成前请求下载", "impact": "恶意文件可能直接分发给其他用户", "suggestion": "下载前检查扫描标签，未扫描时返回 409", "refs": ["S1", "R1"]},
+    {"id": "F2", "level": "verify", "title": "bucket 保留期限未知", "anchors": ["dfd:D1"], "suggestion": "找到生命周期配置或向运维确认"}
+  ],
+  "limitations": ["只读了网关路由和两个服务的入口代码"]
+}
